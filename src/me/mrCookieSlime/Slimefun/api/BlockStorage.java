@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
@@ -16,6 +17,7 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.scheduler.BukkitRunnable;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
@@ -34,12 +36,12 @@ public class BlockStorage {
 	private static final String path_chunks = "data-storage/Slimefun/stored-chunks/";
 
 	public static Map<String, BlockStorage> worlds = new HashMap<String, BlockStorage>();
-	public static Map<String, Set<Location>> ticking_chunks = new HashMap<String, Set<Location>>();
+	public static Map<String, Set<Location>> ticking_chunks = new ConcurrentHashMap<>();
 	public static Set<String> loaded_tickers = new HashSet<String>();
 	
 	private World world;
 	
-	private Map<Location, String> storage = new HashMap<Location, String>();
+	private Map<Location, String> storage = new ConcurrentHashMap<>();
 	private static Map<String, String> map_chunks = new HashMap<String, String>();
 	
 	private Map<Location, BlockMenu> inventories = new HashMap<Location, BlockMenu>();
@@ -86,45 +88,53 @@ public class BlockStorage {
 		
 		File f = new File(path_blocks + w.getName());
 		if (f.exists()) {
-			long total = f.listFiles().length, start = System.currentTimeMillis();
-			long done = 0, timestamp = System.currentTimeMillis(), totalBlocks = 0;
-			
-			try {
-				for (File file: f.listFiles()) {
-					if (file.getName().endsWith(".sfb")) {
-						if (timestamp + info_delay < System.currentTimeMillis()) {
-							System.out.println("[Slimefun] Loading Blocks... " + Math.round((((done * 100.0f) / total) * 100.0f) / 100.0f) + "% done (\"" + w.getName() + "\")");
-							timestamp = System.currentTimeMillis();
-						}
-						
-						FileConfiguration cfg = YamlConfiguration.loadConfiguration(file);
-						for (String key: cfg.getKeys(false)) {
-							Location l = deserializeLocation(key);
-							String chunk_string = locationToChunkString(l);
-							try {
-								totalBlocks++;
-								storage.put(l, cfg.getString(key));
-								
-								if (SlimefunItem.isTicking(file.getName().replace(".sfb", ""))) {
-									Set<Location> locations = ticking_chunks.containsKey(chunk_string) ? ticking_chunks.get(chunk_string): new HashSet<Location>();
-									locations.add(l);
-									ticking_chunks.put(chunk_string, locations);
-									if (!loaded_tickers.contains(chunk_string)) loaded_tickers.add(chunk_string);
+			new BukkitRunnable()
+			{
+				@Override
+				public void run()
+				{
+					long total = f.listFiles().length, start = System.currentTimeMillis();
+					long done = 0, timestamp = System.currentTimeMillis(), totalBlocks = 0;
+
+					try {
+						for (File file: f.listFiles()) {
+							if (file.getName().endsWith(".sfb")) {
+								if (timestamp + info_delay < System.currentTimeMillis()) {
+									System.out.println("[Slimefun] Loading Blocks... " + Math.round((((done * 100.0f) / total) * 100.0f) / 100.0f) + "% done (\"" + w.getName() + "\")");
+									timestamp = System.currentTimeMillis();
 								}
-							} catch(Exception x) {
-								System.err.println("[Slimefun] Failed to load " + file.getName() + "(ERR: " + key + ")");
-								x.printStackTrace();
+
+								FileConfiguration cfg = YamlConfiguration.loadConfiguration(file);
+								for (String key: cfg.getKeys(false)) {
+									Location l = deserializeLocation(key);
+									String chunk_string = locationToChunkString(l);
+									try {
+										totalBlocks++;
+										storage.put(l, cfg.getString(key));
+
+										if (SlimefunItem.isTicking(file.getName().replace(".sfb", ""))) {
+											Set<Location> locations = ticking_chunks.containsKey(chunk_string) ? ticking_chunks.get(chunk_string): new HashSet<Location>();
+											locations.add(l);
+											ticking_chunks.put(chunk_string, locations);
+											if (!loaded_tickers.contains(chunk_string)) loaded_tickers.add(chunk_string);
+										}
+									} catch(Exception x) {
+										System.err.println("[Slimefun] Failed to load " + file.getName() + "(ERR: " + key + ")");
+										x.printStackTrace();
+									}
+								}
+								done++;
 							}
 						}
-						done++;
+					} finally {
+						long time = (System.currentTimeMillis() - start);
+						System.out.println("[Slimefun] Loading Blocks... 100% (FINISHED - " + time + "ms)");
+						System.out.println("[Slimefun] Loaded a total of " + totalBlocks + " Blocks for World \"" + world.getName() + "\"");
+						if (totalBlocks > 0) System.out.println("[Slimefun] Avg: " + DoubleHandler.fixDouble((double) time / (double) totalBlocks, 3) + "ms/Block");
 					}
 				}
-			} finally {
-				long time = (System.currentTimeMillis() - start);
-				System.out.println("[Slimefun] Loading Blocks... 100% (FINISHED - " + time + "ms)");
-				System.out.println("[Slimefun] Loaded a total of " + totalBlocks + " Blocks for World \"" + world.getName() + "\"");
-				if (totalBlocks > 0) System.out.println("[Slimefun] Avg: " + DoubleHandler.fixDouble((double) time / (double) totalBlocks, 3) + "ms/Block");
-			}
+			}.runTaskAsynchronously(SlimefunStartup.instance);
+
 		}
 		else f.mkdirs();
 		
